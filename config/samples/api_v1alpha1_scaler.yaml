@@ -1,0 +1,17 @@
+apiVersion: api.scaler.com/v1alpha1
+kind: Scaler
+metadata:
+  labels:
+    app.kubernetes.io/name: deploy-scaler-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: scaler-sample
+spec:
+  # TODO(user): Add fields here
+  start: 15
+  end: 17
+  replicas: 5
+  deployments:
+    - name: hellok8s-ingress-http
+      namespace: default
+    - name: hellok8s-ingress2-http
+      namespace: default
