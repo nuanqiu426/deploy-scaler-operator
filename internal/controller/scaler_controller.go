@@ -73,29 +73,44 @@ func (r *ScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	// 从start 到 end 的时间段内，设置副本数
 	if startTime <= currentHour && currentHour < endTime {
-		for _, deploy := range scaler.Spec.Deployments {
-			tmpDeploy := &appsv1.Deployment{}
-			err := r.Get(ctx, types.NamespacedName{
-				Name:      deploy.Name,
-				Namespace: deploy.Namespace,
-			}, tmpDeploy)
-			if err != nil {
-				return ctrl.Result{}, err
-			}
-
-			// 判断scaler指定的deployment的副本数是否满足
-			if tmpDeploy.Spec.Replicas != &replicas {
-				tmpDeploy.Spec.Replicas = &replicas
-				err := r.Update(ctx, tmpDeploy)
-				if err != nil {
-					return ctrl.Result{}, err
-				}
-			}
+		err := scalerExpand(scaler, r, ctx, replicas)
+		if err != nil {
+			log.Error(err, "unable to expand deployment")
+			return ctrl.Result{}, err
 		}
-
+		// log.Info(fmt.Sprintf("Scaler %s/%s expanded to %d replicas", scaler.Namespace, scaler.Name, replicas))
 	}
 
 	return ctrl.Result{RequeueAfter: time.Duration(10 * time.Second)}, nil
+}
+
+func scalerExpand(scaler *apiv1alpha1.Scaler, r *ScalerReconciler, ctx context.Context, replicas int32) error {
+	// 扩容逻辑
+	for _, deploy := range scaler.Spec.Deployments {
+		tmpDeploy := &appsv1.Deployment{}
+		err := r.Get(ctx, types.NamespacedName{
+			Name:      deploy.Name,
+			Namespace: deploy.Namespace,
+		}, tmpDeploy)
+		if err != nil {
+			return err
+		}
+
+		// 判断scaler指定的deployment的副本数是否满足
+		if tmpDeploy.Spec.Replicas != &replicas {
+			tmpDeploy.Spec.Replicas = &replicas
+			err := r.Update(ctx, tmpDeploy)
+			// 修改scaler的健康状态
+			if err != nil {
+				// scaler.Status.Health = apiv1alpha1.FAILED
+				scaler.Status.Health = "NOT OK"
+				return err
+			}
+			// scaler.Status.Health = apiv1alpha1.SUCCESS
+			scaler.Status.Health = "OK"
+		}
+	}
+	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
