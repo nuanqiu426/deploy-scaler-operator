@@ -102,12 +102,13 @@ func scalerExpand(scaler *apiv1alpha1.Scaler, r *ScalerReconciler, ctx context.C
 			err := r.Update(ctx, tmpDeploy)
 			// 修改scaler的健康状态
 			if err != nil {
-				// scaler.Status.Health = apiv1alpha1.FAILED
-				scaler.Status.Health = "NOT OK"
+				scaler.Status.Healthy = apiv1alpha1.FAILED
+				// scaler.Status.Healthy = "NOT OK"
+				r.Status().Update(ctx, scaler)
 				return err
 			}
-			// scaler.Status.Health = apiv1alpha1.SUCCESS
-			scaler.Status.Health = "OK"
+			scaler.Status.Healthy = apiv1alpha1.SUCCESS
+			r.Status().Update(ctx, scaler)
 		}
 	}
 	return nil

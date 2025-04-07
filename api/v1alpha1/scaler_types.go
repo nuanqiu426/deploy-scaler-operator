@@ -59,12 +59,12 @@ type ScalerSpec struct {
 type ScalerStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
-	Health string `json:"health"`
+	Healthy string `json:"healthy"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="Status",type="string",JSONPath=`.status.health`
+// +kubebuilder:printcolumn:name="Status",type="string",JSONPath=`.status.healthy`
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=`.metadata.creationTimestamp`
 // +kubebuilder:printcolumn:name="Replicas",type="integer",JSONPath=`.spec.replicas`
 
