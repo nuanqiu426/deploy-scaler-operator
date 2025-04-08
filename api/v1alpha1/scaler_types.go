@@ -21,12 +21,19 @@ import (
 )
 
 const (
-	SUCCESS = "Success"
-	FAILED  = "Failed"
+	SCALED   = "Scaled"
+	PENGDING = "Pending"
+	RESTORED = "Restored"
 )
 
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
+
+type DeploymentInfo struct {
+	// Record Original replicas
+	Replicas  int32  `json:"replicas"`
+	Namespace string `json:"namespace"`
+}
 
 type NamespaceName struct {
 	Name      string `json:"name"`
@@ -59,12 +66,12 @@ type ScalerSpec struct {
 type ScalerStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
-	Healthy string `json:"healthy"`
+	State string `json:"state"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="Status",type="string",JSONPath=`.status.healthy`
+// +kubebuilder:printcolumn:name="Status",type="string",JSONPath=`.status.state`
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=`.metadata.creationTimestamp`
 // +kubebuilder:printcolumn:name="Replicas",type="integer",JSONPath=`.spec.replicas`
 

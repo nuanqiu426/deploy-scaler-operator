@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -36,6 +37,10 @@ type ScalerReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 }
+
+// key == deployment.Name
+var originalDeploymentInfo = make(map[string]apiv1alpha1.DeploymentInfo)
+var annotations = make(map[string]string)
 
 // +kubebuilder:rbac:groups=api.scaler.com,resources=scalers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=api.scaler.com,resources=scalers/status,verbs=get;update;patch
@@ -64,6 +69,18 @@ func (r *ScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	if scaler.Status.State == "" {
+		// 初始化状态
+		scaler.Status.State = apiv1alpha1.PENGDING
+		if err = r.Status().Update(ctx, scaler); err != nil {
+			return ctrl.Result{}, client.IgnoreNotFound(err)
+		}
+		// 初始化map + 添加scaler的annotation
+		if err = addAnnotation(scaler, r, ctx); err != nil {
+			return ctrl.Result{}, client.IgnoreNotFound(err)
+		}
+
+	}
 	startTime := scaler.Spec.Start
 	endTime := scaler.Spec.End
 	replicas := scaler.Spec.Replicas
@@ -73,15 +90,27 @@ func (r *ScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	// 从start 到 end 的时间段内，设置副本数
 	if startTime <= currentHour && currentHour < endTime {
-		err := scalerExpand(scaler, r, ctx, replicas)
-		if err != nil {
-			log.Error(err, "unable to expand deployment")
-			return ctrl.Result{}, err
+		if scaler.Status.State != apiv1alpha1.SCALED {
+			// 执行扩充逻辑
+			log.Info("Start to expand deployment")
+			err = scalerExpand(scaler, r, ctx, replicas)
+			if err != nil {
+				log.Error(err, "unable to expand deployment")
+				return ctrl.Result{}, err
+			}
 		}
-		// log.Info(fmt.Sprintf("Scaler %s/%s expanded to %d replicas", scaler.Namespace, scaler.Name, replicas))
+	} else {
+		if scaler.Status.State == apiv1alpha1.SCALED {
+			log.Info("Start to shrinkage deployment")
+			err := scalerShrinkage(scaler, r, ctx)
+			if err != nil {
+				log.Error(err, "unable to shrinkage deployment")
+				return ctrl.Result{}, err
+			}
+		}
 	}
 
-	return ctrl.Result{RequeueAfter: time.Duration(10 * time.Second)}, nil
+	return ctrl.Result{RequeueAfter: time.Duration(60 * time.Second)}, nil
 }
 
 func scalerExpand(scaler *apiv1alpha1.Scaler, r *ScalerReconciler, ctx context.Context, replicas int32) error {
@@ -99,18 +128,88 @@ func scalerExpand(scaler *apiv1alpha1.Scaler, r *ScalerReconciler, ctx context.C
 		// 判断scaler指定的deployment的副本数是否满足
 		if tmpDeploy.Spec.Replicas != &replicas {
 			tmpDeploy.Spec.Replicas = &replicas
-			err := r.Update(ctx, tmpDeploy)
-			// 修改scaler的健康状态
-			if err != nil {
-				scaler.Status.Healthy = apiv1alpha1.FAILED
-				// scaler.Status.Healthy = "NOT OK"
-				r.Status().Update(ctx, scaler)
+			// 执行扩容
+			if err := r.Update(ctx, tmpDeploy); err != nil {
 				return err
 			}
-			scaler.Status.Healthy = apiv1alpha1.SUCCESS
-			r.Status().Update(ctx, scaler)
 		}
 	}
+
+	scaler.Status.State = apiv1alpha1.SCALED
+	err := r.Status().Update(ctx, scaler)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func scalerShrinkage(scaler *apiv1alpha1.Scaler, r *ScalerReconciler, ctx context.Context) error {
+	// 缩容逻辑
+	for name, deployInfo := range originalDeploymentInfo {
+		tmpDeploy := &appsv1.Deployment{}
+		err := r.Get(ctx, types.NamespacedName{
+			Name:      name,
+			Namespace: deployInfo.Namespace,
+		}, tmpDeploy)
+		if err != nil {
+			return err
+		}
+		// 判断scaler指定的deployment的副本数是否满足
+		if tmpDeploy.Spec.Replicas != &deployInfo.Replicas {
+			tmpDeploy.Spec.Replicas = &deployInfo.Replicas
+			// 执行缩容
+			if err := r.Update(ctx, tmpDeploy); err != nil {
+				return err
+			}
+		}
+	}
+
+	scaler.Status.State = apiv1alpha1.RESTORED
+	err := r.Status().Update(ctx, scaler)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func addAnnotation(scaler *apiv1alpha1.Scaler, r *ScalerReconciler, ctx context.Context) error {
+	// 记录deployment的原始副本数
+	logger.Info("add original state to map")
+	for _, deploy := range scaler.Spec.Deployments {
+		tmpDeploy := &appsv1.Deployment{}
+		err := r.Get(ctx, types.NamespacedName{
+			Name:      deploy.Name,
+			Namespace: deploy.Namespace,
+		}, tmpDeploy)
+		if err != nil {
+			return err
+		}
+
+		if tmpDeploy.Spec.Replicas != &scaler.Spec.Replicas {
+			originalDeploymentInfo[deploy.Name] = apiv1alpha1.DeploymentInfo{
+				Namespace: tmpDeploy.Namespace,
+				Replicas:  *tmpDeploy.Spec.Replicas,
+			}
+		}
+	}
+
+	// 添加annotation
+	for deployName, deployInfo := range originalDeploymentInfo {
+		infoJson, err := json.Marshal(deployInfo)
+		if err != nil {
+			return err
+		}
+		annotations[deployName] = string(infoJson)
+	}
+
+	// 更新scaler的annotation
+	scaler.ObjectMeta.Annotations = annotations
+	err := r.Update(ctx, scaler)
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
