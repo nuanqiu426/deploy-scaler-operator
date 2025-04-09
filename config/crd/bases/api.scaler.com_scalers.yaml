@@ -14,7 +14,17 @@ spec:
     singular: scaler
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .status.state
+      name: Status
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    - jsonPath: .spec.replicas
+      name: Replicas
+      type: integer
+    name: v1alpha1
     schema:
       openAPIV3Schema:
         description: Scaler is the Schema for the scalers API.
@@ -52,11 +62,15 @@ spec:
                   type: object
                 type: array
               end:
+                maximum: 23
+                minimum: 0
                 type: integer
               replicas:
                 format: int32
                 type: integer
               start:
+                maximum: 23
+                minimum: 0
                 type: integer
             required:
             - deployments
@@ -66,6 +80,14 @@ spec:
             type: object
           status:
             description: ScalerStatus defines the observed state of Scaler.
+            properties:
+              state:
+                description: |-
+                  INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
+                  Important: Run "make" to regenerate code after modifying this file
+                type: string
+            required:
+            - state
             type: object
         type: object
     served: true
