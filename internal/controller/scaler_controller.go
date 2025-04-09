@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	apiv1alpha1 "github.com/nuanqiu426/deploy-scaler-operator/api/v1alpha1"
@@ -41,6 +42,8 @@ type ScalerReconciler struct {
 // key == deployment.Name
 var originalDeploymentInfo = make(map[string]apiv1alpha1.DeploymentInfo)
 var annotations = make(map[string]string)
+
+const finalizer = "scalers.api.scaler.com/finalizer"
 
 // +kubebuilder:rbac:groups=api.scaler.com,resources=scalers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=api.scaler.com,resources=scalers/status,verbs=get;update;patch
@@ -69,44 +72,72 @@ func (r *ScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	if scaler.Status.State == "" {
-		// 初始化状态
-		scaler.Status.State = apiv1alpha1.PENGDING
-		if err = r.Status().Update(ctx, scaler); err != nil {
-			return ctrl.Result{}, client.IgnoreNotFound(err)
+	// 添加finalizer
+	// 这里的逻辑是：如果对象暂未删除，且没有finalizer，就添加finalizer
+	if scaler.ObjectMeta.DeletionTimestamp.IsZero() {
+		if !controllerutil.ContainsFinalizer(scaler, finalizer) {
+			controllerutil.AddFinalizer(scaler, finalizer)
+			if err = r.Update(ctx, scaler); err != nil {
+				return ctrl.Result{}, client.IgnoreNotFound(err)
+			}
+			log.Info("Add finalizer to scaler")
 		}
-		// 初始化map + 添加scaler的annotation
-		if err = addAnnotation(scaler, r, ctx); err != nil {
-			return ctrl.Result{}, client.IgnoreNotFound(err)
+
+		if scaler.Status.State == "" {
+			// 初始化状态
+			scaler.Status.State = apiv1alpha1.PENGDING
+			if err = r.Status().Update(ctx, scaler); err != nil {
+				return ctrl.Result{}, client.IgnoreNotFound(err)
+			}
+			// 初始化map + 添加scaler的annotation
+			if err = addAnnotation(scaler, r, ctx); err != nil {
+				return ctrl.Result{}, client.IgnoreNotFound(err)
+			}
+
 		}
+		startTime := scaler.Spec.Start
+		endTime := scaler.Spec.End
+		replicas := scaler.Spec.Replicas
 
-	}
-	startTime := scaler.Spec.Start
-	endTime := scaler.Spec.End
-	replicas := scaler.Spec.Replicas
+		currentHour := time.Now().Local().Hour()
+		log.Info(fmt.Sprintf("Current Hour: %d", currentHour))
 
-	currentHour := time.Now().Local().Hour()
-	log.Info(fmt.Sprintf("Current Hour: %d", currentHour))
-
-	// 从start 到 end 的时间段内，设置副本数
-	if startTime <= currentHour && currentHour < endTime {
-		if scaler.Status.State != apiv1alpha1.SCALED {
-			// 执行扩充逻辑
-			log.Info("Start to expand deployment")
-			err = scalerExpand(scaler, r, ctx, replicas)
-			if err != nil {
-				log.Error(err, "unable to expand deployment")
-				return ctrl.Result{}, err
+		// 从start 到 end 的时间段内，设置副本数
+		if startTime <= currentHour && currentHour < endTime {
+			if scaler.Status.State != apiv1alpha1.SCALED {
+				// 执行扩充逻辑
+				log.Info("Start to expand deployment")
+				err = scalerExpand(scaler, r, ctx, replicas)
+				if err != nil {
+					log.Error(err, "unable to expand deployment")
+					return ctrl.Result{}, err
+				}
+			}
+		} else {
+			if scaler.Status.State == apiv1alpha1.SCALED {
+				log.Info("Start to shrinkage deployment")
+				err := scalerShrinkage(scaler, r, ctx)
+				if err != nil {
+					log.Error(err, "unable to shrinkage deployment")
+					return ctrl.Result{}, err
+				}
 			}
 		}
 	} else {
-		if scaler.Status.State == apiv1alpha1.SCALED {
-			log.Info("Start to shrinkage deployment")
+		// 对象要被删除，执行finalizer逻辑
+		log.Info("Start to delete scaler")
+		if scaler.Status.State == apiv1alpha1.SCALED || scaler.Status.State == apiv1alpha1.SCALING {
 			err := scalerShrinkage(scaler, r, ctx)
 			if err != nil {
-				log.Error(err, "unable to shrinkage deployment")
+				log.Error(err, "unable to shrinkage deployment (finalizer)")
 				return ctrl.Result{}, err
 			}
+		}
+		// 删除finalizer
+		log.Info("Remove finalizer from scaler")
+		controllerutil.RemoveFinalizer(scaler, finalizer)
+		if err = r.Update(ctx, scaler); err != nil {
+			return ctrl.Result{}, err
 		}
 	}
 
@@ -115,6 +146,12 @@ func (r *ScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 func scalerExpand(scaler *apiv1alpha1.Scaler, r *ScalerReconciler, ctx context.Context, replicas int32) error {
 	// 扩容逻辑
+	scaler.Status.State = apiv1alpha1.SCALING // 设置状态为扩容中
+	err := r.Status().Update(ctx, scaler)
+	if err != nil {
+		return err
+	}
+
 	for _, deploy := range scaler.Spec.Deployments {
 		tmpDeploy := &appsv1.Deployment{}
 		err := r.Get(ctx, types.NamespacedName{
@@ -135,8 +172,8 @@ func scalerExpand(scaler *apiv1alpha1.Scaler, r *ScalerReconciler, ctx context.C
 		}
 	}
 
-	scaler.Status.State = apiv1alpha1.SCALED
-	err := r.Status().Update(ctx, scaler)
+	scaler.Status.State = apiv1alpha1.SCALED // 设置状态为扩容完成
+	err = r.Status().Update(ctx, scaler)
 	if err != nil {
 		return err
 	}

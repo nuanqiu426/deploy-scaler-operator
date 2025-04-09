@@ -21,8 +21,9 @@ import (
 )
 
 const (
-	SCALED   = "Scaled"
 	PENGDING = "Pending"
+	SCALED   = "Scaled"
+	SCALING  = "Scaling"
 	RESTORED = "Restored"
 )
 

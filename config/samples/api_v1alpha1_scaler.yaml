@@ -7,8 +7,8 @@ metadata:
   name: scaler-sample
 spec:
   # TODO(user): Add fields here
-  start: 21
-  end: 22
+  start: 17
+  end: 18
   replicas: 3
   deployments:
     - name: hellok8s-ingress-http
